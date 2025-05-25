@@ -47,10 +47,6 @@ Monte Carlo simulation estimates this expectation by:
 3.  Averaging these payoffs.
 4.  Discounting the average payoff back to the present value using the risk-free rate $r$.
 
-## Repository Structure
-
-monte-carlo-barrier-option-pricer/│├── .gitignore├── LICENSE├── README.md│├── barrier_option_pricer/   # Main application package│   ├── init.py│   ├── pricer.py            # Core BarrierOptionsPricer class and logic│   ├── utils.py             # Optional: Helper functions (e.g., for plotting)│   └── cli.py               # Optional: CLI logic if separated│├── notebooks/                 # Jupyter notebooks for demos and analysis│   ├── 01_GBM_Simulation_Demo.ipynb│   ├── 02_Barrier_Option_Pricing_Examples.ipynb│   ├── 03_Convergence_Analysis.ipynb│   ├── 04_Sensitivity_Analysis.ipynb│   └── 05_Continuity_Correction_Impact.ipynb│├── requirements.txt         # Python package dependencies│├── setup.py                 # For making the project an installable package│└── tests/                     # Unit and integration tests├── init.py└── ... (test files for different modules)
-## Prerequisites
 
 * Python (>=3.8 recommended)
 * The libraries listed in `requirements.txt`:
