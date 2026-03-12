@@ -6,7 +6,7 @@ A Python options analytics project with two layers:
 1) **Barrier option pricing** (European knock-in/knock-out barriers) via **Monte Carlo** under risk-neutral **GBM**, including confidence intervals and monitoring controls.
 
 2) **Listed options desk tooling** for **vanilla European calls and puts**:
-   **Black–Scholes pricing**, **Greeks**, **implied volatility**, simple **vol smile** building (optional **SVI** slice fit), plus scripts that turn an **options chain snapshot + positions** into **IV/Greeks, aggregated risk, and scenario PnL**.
+   **Black–Scholes pricing**, **Greeks**, **implied volatility**, simple **vol smile** building (optional **SVI** slice fit), plus scripts that turn an **options chain snapshot + positions** into **IV/Greeks, aggregated risk, and scenario PnL**. (To be pushed shortly)
 
 If you are looking for “pricing”, this repo prices:
 - Barrier options via Monte Carlo (in `pricer/pricer.py`)
