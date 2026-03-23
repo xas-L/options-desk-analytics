@@ -1,596 +1,717 @@
-import numpy as np
-import matplotlib.pyplot as plt
-from typing import Tuple, Union, Optional
+"""Monte Carlo pricer for barrier options under risk-neutral GBM.
+
+Supports all eight barrier types (down/up, in/out, call/put).
+
+Key implementation notes
+------------------------
+Path generation
+    Log-returns are accumulated with np.cumsum so the entire path matrix is
+    built in two vectorised operations with no Python loop over time steps.
+
+Antithetic variates
+    Half the standard-normal draws Z are generated; the antithetic half is
+    simply -Z.  Both halves are stacked before the path matrix is built, so
+    there is exactly one call to np.random.normal regardless of whether
+    antithetic variates are enabled.
+
+Payoff calculation
+    Barrier breach is detected with a single np.min / np.max reduction over
+    the path axis — one call, all paths simultaneously.  No Python loop over
+    paths; no Python loop over time steps inside the payoff routine.
+
+Continuity correction
+    The Broadie-Glasserman-Kou correction adjusts the barrier level ONCE,
+    before paths are generated, using the actual sigma passed to the pricer.
+    The original code hardcoded sigma=0.2 inside the per-path payoff method;
+    that bug is fixed here.
+
+Barrier hit statistic
+    Derived from the boolean array already produced by the payoff routine.
+    No second loop over paths.
+"""
+
+from __future__ import annotations
+
 import time
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+from scipy import stats as scipy_stats
+
+
+# ---------------------------------------------------------------------------
+# Option type helpers
+# ---------------------------------------------------------------------------
+
+_VALID_OPTION_TYPES = frozenset([
+    "down_and_out_call", "down_and_out_put",
+    "up_and_out_call",   "up_and_out_put",
+    "down_and_in_call",  "down_and_in_put",
+    "up_and_in_call",    "up_and_in_put",
+])
+
+
+def _parse_option_type(option_type: str) -> Tuple[bool, bool, bool]:
+    """Return (is_down, is_out, is_call) for a valid option type string."""
+    ot = option_type.strip().lower()
+    if ot not in _VALID_OPTION_TYPES:
+        raise ValueError(
+            f"Invalid option_type '{option_type}'. "
+            f"Must be one of: {sorted(_VALID_OPTION_TYPES)}"
+        )
+    return "down" in ot, "out" in ot, "call" in ot
+
+
+# ---------------------------------------------------------------------------
+# Vectorised path generation
+# ---------------------------------------------------------------------------
+
+def _simulate_gbm_paths(
+    S0: float,
+    r: float,
+    sigma: float,
+    T: float,
+    N_sim: int,
+    N_steps: int,
+    Z: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Generate GBM paths from a pre-supplied or freshly drawn normal matrix.
+
+    Parameters
+    ----------
+    S0, r, sigma, T : float
+        Standard GBM parameters.
+    N_sim : int
+        Number of paths to generate.
+    N_steps : int
+        Number of time steps.
+    Z : ndarray of shape (N_sim, N_steps), optional
+        Pre-drawn standard normals.  If None, drawn internally.
+
+    Returns
+    -------
+    paths : ndarray of shape (N_sim, N_steps + 1)
+    """
+    dt = T / N_steps
+    drift = (r - 0.5 * sigma ** 2) * dt
+    diffusion = sigma * np.sqrt(dt)
+
+    if Z is None:
+        Z = np.random.standard_normal((N_sim, N_steps))
+
+    # Accumulate log-returns; prepend column of zeros for S0
+    log_increments = drift + diffusion * Z                        # (N_sim, N_steps)
+    log_paths = np.empty((N_sim, N_steps + 1), dtype=np.float64)
+    log_paths[:, 0] = 0.0
+    np.cumsum(log_increments, axis=1, out=log_paths[:, 1:])
+    return S0 * np.exp(log_paths)
+
+
+def _draw_normals_with_antithetic(N_sim: int, N_steps: int) -> np.ndarray:
+    """Return (N_sim, N_steps) standard normals; bottom half is antithetic.
+
+    If N_sim is odd the last path has no antithetic pair and a fresh draw is
+    appended so the returned matrix always has exactly N_sim rows.
+    """
+    half = N_sim // 2
+    Z_half = np.random.standard_normal((half, N_steps))
+    Z = np.vstack([Z_half, -Z_half])
+    if N_sim % 2 == 1:                                           # odd sim count
+        Z = np.vstack([Z, np.random.standard_normal((1, N_steps))])
+    return Z
+
+
+# ---------------------------------------------------------------------------
+# Continuity correction (Broadie-Glasserman-Kou 1997)
+# ---------------------------------------------------------------------------
+
+_BGK_BETA = 0.5826  # beta = -zeta(1/2) / sqrt(2*pi)
+
+
+def apply_continuity_correction(
+    B: float,
+    sigma: float,
+    T: float,
+    N_steps: int,
+    option_type: str,
+) -> float:
+    """Adjust the barrier level to approximate continuous monitoring.
+
+    The BGK correction shifts B by exp(±beta * sigma * sqrt(dt)) so that the
+    discretely monitored price matches the continuously monitored price to
+    first order.
+
+    Direction of shift
+    ------------------
+    Down barriers are shifted inward (lowered for out, raised for in) so that
+    the discrete simulation is less likely to miss a crossing near the barrier.
+    Up barriers are shifted in the opposite sense.
+
+    Parameters
+    ----------
+    B : float
+        Unadjusted barrier level.
+    sigma : float
+        Annualised volatility — must be the same sigma used to simulate paths.
+    T, N_steps : float, int
+        Used to compute dt = T / N_steps.
+    option_type : str
+        One of the eight valid barrier type strings.
+
+    Returns
+    -------
+    float
+        Adjusted barrier level.
+    """
+    dt = T / N_steps
+    eps = _BGK_BETA * sigma * np.sqrt(dt)
+    is_down, is_out, _ = _parse_option_type(option_type)
+
+    if is_down:
+        # down-out: lower barrier (paths less likely to breach by rounding)
+        # down-in:  raise barrier (symmetric argument)
+        sign = -1.0 if is_out else +1.0
+    else:
+        # up-out: raise barrier
+        # up-in:  lower barrier
+        sign = +1.0 if is_out else -1.0
+
+    return B * np.exp(sign * eps)
+
+
+# ---------------------------------------------------------------------------
+# Vectorised payoff calculation
+# ---------------------------------------------------------------------------
+
+def _compute_payoffs(
+    paths: np.ndarray,
+    K: float,
+    B_eff: float,
+    is_down: bool,
+    is_out: bool,
+    is_call: bool,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute discounted-payoff numerator and barrier indicator for all paths.
+
+    Parameters
+    ----------
+    paths : ndarray of shape (N_sim, N_steps + 1)
+    K : float
+        Strike.
+    B_eff : float
+        Effective barrier (already continuity-corrected if requested).
+    is_down, is_out, is_call : bool
+        Option type flags from ``_parse_option_type``.
+
+    Returns
+    -------
+    payoffs : ndarray of shape (N_sim,)
+        Undiscounted payoff for each path.
+    barrier_crossed : ndarray of bool, shape (N_sim,)
+        True where the barrier was breached on that path.
+    """
+    # ------------------------------------------------------------------
+    # 1. Barrier breach: one reduction over the time axis — no path loop
+    # ------------------------------------------------------------------
+    # Note: we check the *monitoring nodes* only (columns 1..N_steps for
+    # discrete monitoring).  Column 0 is S0 which by construction satisfies
+    # the barrier condition for any sensible parameter set; including it would
+    # silently knock out every path if S0 == B.  We exclude it to match the
+    # standard discrete-monitoring convention.
+    monitoring_prices = paths[:, 1:]   # shape (N_sim, N_steps)
+
+    if is_down:
+        barrier_crossed = monitoring_prices.min(axis=1) <= B_eff
+    else:
+        barrier_crossed = monitoring_prices.max(axis=1) >= B_eff
+
+    # ------------------------------------------------------------------
+    # 2. Terminal payoff
+    # ------------------------------------------------------------------
+    S_T = paths[:, -1]
+    if is_call:
+        intrinsic = np.maximum(S_T - K, 0.0)
+    else:
+        intrinsic = np.maximum(K - S_T, 0.0)
+
+    # ------------------------------------------------------------------
+    # 3. Apply barrier condition
+    # ------------------------------------------------------------------
+    if is_out:
+        payoffs = intrinsic * (~barrier_crossed)
+    else:
+        payoffs = intrinsic * barrier_crossed
+
+    return payoffs, barrier_crossed
+
+
+# ---------------------------------------------------------------------------
+# Main pricer class
+# ---------------------------------------------------------------------------
 
 class BarrierOptionsPricer:
+    """Monte Carlo pricer for barrier options under risk-neutral GBM.
+
+    Supports all eight barrier types (down/up × in/out × call/put).
+    All heavy computation is vectorised over paths; there are no Python-level
+    loops over paths or time steps in the hot path.
     """
-    Monte Carlo pricer for barrier options using Geometric Brownian Motion.
-    
-    Supports all four types of barrier options (Down-and-Out, Up-and-Out, 
-    Down-and-In, Up-and-In) for both calls and puts.
-    """
-    
-    def __init__(self):
-        """Initialize the pricer."""
-        self.valid_option_types = [
-            'down_and_out_call', 'down_and_out_put',
-            'up_and_out_call', 'up_and_out_put',
-            'down_and_in_call', 'down_and_in_put',
-            'up_and_in_call', 'up_and_in_put'
-        ]
-    
-    def simulate_gbm_paths(self, S0: float, r: float, sigma: float, T: float, 
-                          N_sim: int, N_steps: int) -> np.ndarray:
-        """
-        Simulate asset price paths using Geometric Brownian Motion.
-        
-        Parameters:
-        -----------
+
+    valid_option_types: List[str] = sorted(_VALID_OPTION_TYPES)
+
+    # ------------------------------------------------------------------
+    # Public path-generation wrapper (kept for notebook use)
+    # ------------------------------------------------------------------
+
+    def simulate_gbm_paths(
+        self,
+        S0: float,
+        r: float,
+        sigma: float,
+        T: float,
+        N_sim: int,
+        N_steps: int,
+    ) -> np.ndarray:
+        """Simulate GBM price paths.
+
+        Parameters
+        ----------
         S0 : float
-            Initial asset price
+            Initial asset price.
         r : float
-            Risk-free interest rate (annualized)
+            Annualised risk-free rate.
         sigma : float
-            Volatility (annualized)
+            Annualised volatility.
         T : float
-            Time to maturity (in years)
+            Time to maturity in years.
         N_sim : int
-            Number of Monte Carlo paths
+            Number of Monte Carlo paths.
         N_steps : int
-            Number of time steps for discretizing the path
-        
-        Returns:
-        --------
-        np.ndarray
-            Array of shape (N_sim, N_steps + 1) containing all price paths
+            Number of discrete time steps.
+
+        Returns
+        -------
+        ndarray of shape (N_sim, N_steps + 1)
         """
-        # Calculate time step
-        dt = T / N_steps
-        
-        # Pre-calculate drift and diffusion terms
-        drift = (r - 0.5 * sigma**2) * dt
-        diffusion = sigma * np.sqrt(dt)
-        
-        # Generate random numbers for all paths and time steps
-        random_shocks = np.random.normal(0, 1, (N_sim, N_steps))
-        
-        # Initialize paths array
-        paths = np.zeros((N_sim, N_steps + 1))
-        paths[:, 0] = S0  # Set initial price
-        
-        # Generate paths efficiently using vectorized operations
-        for i in range(N_steps):
-            paths[:, i + 1] = paths[:, i] * np.exp(drift + diffusion * random_shocks[:, i])
-        
-        return paths
-    
-    def apply_continuity_correction(self, B: float, sigma: float, T: float, 
-                                  N_steps: int, option_type: str) -> float:
-        """
-        Apply continuity correction for discrete monitoring to approximate continuous barrier.
-        
-        Parameters:
-        -----------
-        B : float
-            Original barrier level
-        sigma : float
-            Volatility
-        T : float
-            Time to maturity
-        N_steps : int
-            Number of time steps
-        option_type : str
-            Type of barrier option
-        
-        Returns:
-        --------
-        float
-            Adjusted barrier level
-        """
-        dt = T / N_steps
-        correction_factor = 0.5826 * sigma * np.sqrt(dt)
-        
-        # Determine sign of correction based on option type
-        if 'down' in option_type:
-            if 'out' in option_type:
-                # Down-and-out: lower the barrier
-                B_adj = B * np.exp(-correction_factor)
-            else:
-                # Down-and-in: raise the barrier
-                B_adj = B * np.exp(correction_factor)
-        else:  # 'up' in option_type
-            if 'out' in option_type:
-                # Up-and-out: raise the barrier
-                B_adj = B * np.exp(correction_factor)
-            else:
-                # Up-and-in: lower the barrier
-                B_adj = B * np.exp(-correction_factor)
-        
-        return B_adj
-    
-    def calculate_barrier_payoff(self, path: np.ndarray, K: float, B: float, 
-                               option_type: str, T: float, r: float,
-                               monitoring_type: str = 'discrete') -> float:
-        """
-        Calculate the payoff for a single path given the barrier conditions.
-        
-        Parameters:
-        -----------
-        path : np.ndarray
-            Single price path
-        K : float
-            Strike price
-        B : float
-            Barrier level
-        option_type : str
-            Type of barrier option
-        T : float
-            Time to maturity
-        r : float
-            Risk-free rate
-        monitoring_type : str
-            'discrete' or 'continuous_approx'
-        
-        Returns:
-        --------
-        float
-            Payoff for this path
-        """
-        if option_type not in self.valid_option_types:
-            raise ValueError(f"Invalid option type. Must be one of {self.valid_option_types}")
-        
-        # Apply continuity correction if requested
-        if monitoring_type == 'continuous_approx':
-            sigma_est = 0.2  # Default volatility estimate for correction
-            N_steps = len(path) - 1
-            B_adj = self.apply_continuity_correction(B, sigma_est, T, N_steps, option_type)
-        else:
-            B_adj = B
-        
-        # Initialize barrier conditions
-        knocked_out = False
-        knocked_in = False
-        
-        # Monitor barrier throughout the path
-        for price in path:
-            if 'down_and_out' in option_type:
-                if price <= B_adj:
-                    knocked_out = True
-                    break
-            elif 'up_and_out' in option_type:
-                if price >= B_adj:
-                    knocked_out = True
-                    break
-            elif 'down_and_in' in option_type:
-                if price <= B_adj:
-                    knocked_in = True
-                    break
-            elif 'up_and_in' in option_type:
-                if price >= B_adj:
-                    knocked_in = True
-                    break
-        
-        # Calculate intrinsic payoff at maturity
-        S_T = path[-1]
-        
-        if 'call' in option_type:
-            intrinsic_payoff = max(S_T - K, 0)
-        else:  # put
-            intrinsic_payoff = max(K - S_T, 0)
-        
-        # Apply barrier conditions to determine final payoff
-        payoff = 0.0
-        
-        if 'out' in option_type:
-            # For knock-out options, pay off only if barrier was never hit
-            if not knocked_out:
-                payoff = intrinsic_payoff
-        else:  # 'in' in option_type
-            # For knock-in options, pay off only if barrier was hit
-            if knocked_in:
-                payoff = intrinsic_payoff
-        
-        return payoff
-    
-    def monte_carlo_pricer(self, S0: float, K: float, B: float, T: float,
-                          r: float, sigma: float, option_type: str,
-                          N_sim: int, N_steps: int,
-                          monitoring_type: str = 'discrete',
-                          confidence_level: float = 0.95,
-                          antithetic: bool = False) -> Tuple[float, float, float, dict]:
-        """
-        Price barrier options using Monte Carlo simulation.
-        
-        Parameters:
-        -----------
+        return _simulate_gbm_paths(S0, r, sigma, T, N_sim, N_steps)
+
+    # ------------------------------------------------------------------
+    # Continuity correction (public wrapper)
+    # ------------------------------------------------------------------
+
+    def apply_continuity_correction(
+        self,
+        B: float,
+        sigma: float,
+        T: float,
+        N_steps: int,
+        option_type: str,
+    ) -> float:
+        """Return the BGK-adjusted barrier level. See module-level docstring."""
+        return apply_continuity_correction(B, sigma, T, N_steps, option_type)
+
+    # ------------------------------------------------------------------
+    # Core Monte Carlo pricer
+    # ------------------------------------------------------------------
+
+    def monte_carlo_pricer(
+        self,
+        S0: float,
+        K: float,
+        B: float,
+        T: float,
+        r: float,
+        sigma: float,
+        option_type: str,
+        N_sim: int,
+        N_steps: int,
+        monitoring_type: str = "discrete",
+        confidence_level: float = 0.95,
+        antithetic: bool = False,
+    ) -> Tuple[float, float, float, Dict]:
+        """Price a barrier option by Monte Carlo simulation.
+
+        Parameters
+        ----------
         S0 : float
-            Initial asset price
+            Initial asset price.
         K : float
-            Strike price
+            Strike price.
         B : float
-            Barrier level
+            Barrier level.
         T : float
-            Time to maturity (in years)
+            Time to maturity in years.
         r : float
-            Risk-free interest rate (annualized)
+            Annualised risk-free rate.
         sigma : float
-            Volatility (annualized)
+            Annualised volatility.
         option_type : str
-            Type of barrier option
+            One of: down_and_out_call, down_and_out_put, up_and_out_call,
+            up_and_out_put, down_and_in_call, down_and_in_put,
+            up_and_in_call, up_and_in_put.
         N_sim : int
-            Number of Monte Carlo paths
+            Total number of simulation paths (including antithetic pairs).
         N_steps : int
-            Number of time steps
+            Number of discrete monitoring steps.
         monitoring_type : str
-            'discrete' or 'continuous_approx'
+            ``'discrete'`` — check barrier only at the N_steps monitoring
+            dates.  ``'continuous_approx'`` — apply the BGK continuity
+            correction to B so that the discrete simulation approximates
+            continuous monitoring.
         confidence_level : float
-            Confidence level for the interval (default 0.95)
+            Coverage for the reported confidence interval (default 0.95).
         antithetic : bool
-            Whether to use antithetic variates for variance reduction
-        
-        Returns:
-        --------
-        Tuple[float, float, float, dict]
-            option_price, confidence_interval_lower, confidence_interval_upper, statistics
+            If True, half the paths use negated normal draws (antithetic
+            variates) for variance reduction at no extra cost.
+
+        Returns
+        -------
+        price : float
+            Discounted Monte Carlo estimate.
+        ci_lower, ci_upper : float
+            Confidence interval bounds at ``confidence_level``.
+        stats : dict
+            Diagnostic statistics — see keys below.
+
+        Stats keys
+        ----------
+        mean_payoff, std_payoff, standard_error, mc_error,
+        barrier_hit_percentage, computation_time, effective_simulations,
+        convergence_ratio
         """
-        start_time = time.time()
-        
-        # Adjust number of simulations for antithetic variates
-        if antithetic:
-            effective_sims = N_sim // 2
+        t0 = time.perf_counter()
+
+        is_down, is_out, is_call = _parse_option_type(option_type)
+
+        # ------------------------------------------------------------------
+        # 1. Continuity correction — applied ONCE here with the real sigma,
+        #    not inside a per-path loop with a hardcoded dummy value.
+        # ------------------------------------------------------------------
+        if monitoring_type == "continuous_approx":
+            B_eff = apply_continuity_correction(B, sigma, T, N_steps, option_type)
+        elif monitoring_type == "discrete":
+            B_eff = float(B)
         else:
-            effective_sims = N_sim
-        
-        # Generate all paths
-        paths = self.simulate_gbm_paths(S0, r, sigma, T, effective_sims, N_steps)
-        
-        # Apply antithetic variates if requested
+            raise ValueError(
+                f"monitoring_type must be 'discrete' or 'continuous_approx', "
+                f"got '{monitoring_type}'"
+            )
+
+        # ------------------------------------------------------------------
+        # 2. Draw random normals — antithetic pairs built here, not by
+        #    extracting and negating log-returns from already-generated paths.
+        # ------------------------------------------------------------------
         if antithetic:
-            # Generate antithetic paths by negating the random shocks
-            dt = T / N_steps
-            drift = (r - 0.5 * sigma**2) * dt
-            diffusion = sigma * np.sqrt(dt)
-            
-            # Calculate log returns for original paths
-            log_returns = np.diff(np.log(paths), axis=1)
-            
-            # Create antithetic log returns
-            antithetic_log_returns = -log_returns
-            
-            # Generate antithetic paths
-            antithetic_paths = np.zeros_like(paths)
-            antithetic_paths[:, 0] = S0
-            
-            for i in range(N_steps):
-                antithetic_paths[:, i + 1] = antithetic_paths[:, i] * np.exp(antithetic_log_returns[:, i])
-            
-            # Combine original and antithetic paths
-            all_paths = np.vstack([paths, antithetic_paths])
+            Z = _draw_normals_with_antithetic(N_sim, N_steps)
         else:
-            all_paths = paths
-        
-        # Calculate payoffs for all paths
-        all_payoffs = []
-        for path in all_paths:
-            payoff = self.calculate_barrier_payoff(path, K, B, option_type, T, r, monitoring_type)
-            all_payoffs.append(payoff)
-        
-        all_payoffs = np.array(all_payoffs)
-        
-        # Calculate discounted option price
-        mean_payoff = np.mean(all_payoffs)
-        option_price = mean_payoff * np.exp(-r * T)
-        
-        # Calculate confidence interval
-        std_payoffs = np.std(all_payoffs, ddof=1)  # Sample standard deviation
-        n_total = len(all_payoffs)
-        standard_error = std_payoffs / np.sqrt(n_total)
-        
-        # Get critical value for confidence interval
-        from scipy import stats
-        alpha = 1 - confidence_level
-        critical_value = stats.norm.ppf(1 - alpha/2)
-        
-        # Calculate confidence interval for the discounted price
-        margin_of_error = critical_value * standard_error * np.exp(-r * T)
-        confidence_lower = option_price - margin_of_error
-        confidence_upper = option_price + margin_of_error
-        
-        # Calculate additional statistics
-        computation_time = time.time() - start_time
-        
-        # Monte Carlo error (theoretical standard error)
-        mc_error = standard_error * np.exp(-r * T)
-        
-        # Calculate percentage of paths that hit the barrier
-        barrier_hit_count = 0
-        for path in all_paths:
-            if 'down_and_out' in option_type or 'down_and_in' in option_type:
-                if np.any(path <= B):
-                    barrier_hit_count += 1
-            else:  # up options
-                if np.any(path >= B):
-                    barrier_hit_count += 1
-        
-        barrier_hit_percentage = (barrier_hit_count / n_total) * 100
-        
-        statistics = {
-            'mean_payoff': mean_payoff,
-            'std_payoff': std_payoffs,
-            'standard_error': standard_error,
-            'mc_error': mc_error,
-            'barrier_hit_percentage': barrier_hit_percentage,
-            'computation_time': computation_time,
-            'effective_simulations': n_total,
-            'convergence_ratio': mc_error / option_price if option_price > 0 else float('inf')
+            Z = np.random.standard_normal((N_sim, N_steps))
+
+        # ------------------------------------------------------------------
+        # 3. Generate all paths in one vectorised call.
+        # ------------------------------------------------------------------
+        paths = _simulate_gbm_paths(S0, r, sigma, T, N_sim, N_steps, Z=Z)
+
+        # ------------------------------------------------------------------
+        # 4. Compute payoffs and barrier indicator — fully vectorised,
+        #    no Python loop over paths or time steps.
+        # ------------------------------------------------------------------
+        payoffs, barrier_crossed = _compute_payoffs(
+            paths, K, B_eff, is_down, is_out, is_call
+        )
+
+        # ------------------------------------------------------------------
+        # 5. Price and confidence interval.
+        # ------------------------------------------------------------------
+        disc = np.exp(-r * T)
+        mean_payoff = float(payoffs.mean())
+        price = disc * mean_payoff
+
+        std_payoff = float(payoffs.std(ddof=1))
+        n = len(payoffs)
+        se = std_payoff / np.sqrt(n)
+        mc_error = disc * se
+
+        alpha = 1.0 - confidence_level
+        z = float(scipy_stats.norm.ppf(1.0 - alpha / 2.0))
+        ci_lower = price - z * mc_error
+        ci_upper = price + z * mc_error
+
+        # ------------------------------------------------------------------
+        # 6. Diagnostics — barrier hit percentage from the boolean array
+        #    already computed in step 4; no second loop needed.
+        # ------------------------------------------------------------------
+        barrier_hit_pct = float(barrier_crossed.mean()) * 100.0
+        computation_time = time.perf_counter() - t0
+
+        diagnostics: Dict = {
+            "mean_payoff": mean_payoff,
+            "std_payoff": std_payoff,
+            "standard_error": se,
+            "mc_error": mc_error,
+            "barrier_hit_percentage": barrier_hit_pct,
+            "computation_time": computation_time,
+            "effective_simulations": n,
+            "convergence_ratio": mc_error / price if price > 0.0 else float("inf"),
         }
-        
-        return option_price, confidence_lower, confidence_upper, statistics
-    
-    def analyze_convergence(self, S0: float, K: float, B: float, T: float,
-                           r: float, sigma: float, option_type: str,
-                           N_steps: int, sim_counts: list = None,
-                           monitoring_type: str = 'discrete') -> dict:
-        """
-        Analyze convergence of the Monte Carlo estimate as number of simulations increases.
-        
-        Parameters:
-        -----------
-        S0, K, B, T, r, sigma, option_type, N_steps : option parameters
-        sim_counts : list
-            List of simulation counts to test
-        monitoring_type : str
-            Monitoring type
-        
-        Returns:
-        --------
-        dict
-            Dictionary containing convergence analysis results
+
+        return price, ci_lower, ci_upper, diagnostics
+
+    # ------------------------------------------------------------------
+    # Convergence analysis
+    # ------------------------------------------------------------------
+
+    def analyze_convergence(
+        self,
+        S0: float,
+        K: float,
+        B: float,
+        T: float,
+        r: float,
+        sigma: float,
+        option_type: str,
+        N_steps: int,
+        sim_counts: Optional[List[int]] = None,
+        monitoring_type: str = "discrete",
+    ) -> Dict:
+        """Price the option at increasing simulation counts to study convergence.
+
+        Parameters
+        ----------
+        sim_counts : list of int, optional
+            Simulation counts to sweep.  Defaults to
+            [1_000, 5_000, 10_000, 50_000, 100_000, 500_000].
+
+        Returns
+        -------
+        dict with keys: sim_counts, prices, errors, computation_times
         """
         if sim_counts is None:
-            sim_counts = [1000, 5000, 10000, 50000, 100000, 500000]
-        
-        prices = []
-        errors = []
-        times = []
-        
-        for N_sim in sim_counts:
-            price, _, _, stats = self.monte_carlo_pricer(
-                S0, K, B, T, r, sigma, option_type, N_sim, N_steps, monitoring_type
+            sim_counts = [1_000, 5_000, 10_000, 50_000, 100_000, 500_000]
+
+        prices, errors, times = [], [], []
+        for n in sim_counts:
+            p, _, _, d = self.monte_carlo_pricer(
+                S0, K, B, T, r, sigma, option_type, n, N_steps, monitoring_type
             )
-            prices.append(price)
-            errors.append(stats['mc_error'])
-            times.append(stats['computation_time'])
-        
+            prices.append(p)
+            errors.append(d["mc_error"])
+            times.append(d["computation_time"])
+
         return {
-            'sim_counts': sim_counts,
-            'prices': prices,
-            'errors': errors,
-            'computation_times': times
+            "sim_counts": sim_counts,
+            "prices": prices,
+            "errors": errors,
+            "computation_times": times,
         }
-    
-    def sensitivity_analysis(self, S0: float, K: float, B: float, T: float,
-                           r: float, sigma: float, option_type: str,
-                           N_sim: int, N_steps: int,
-                           parameter: str, range_pct: float = 0.1,
-                           num_points: int = 11) -> dict:
-        """
-        Perform sensitivity analysis on a specified parameter.
-        
-        Parameters:
-        -----------
-        S0, K, B, T, r, sigma, option_type, N_sim, N_steps : option parameters
+
+    # ------------------------------------------------------------------
+    # Sensitivity analysis
+    # ------------------------------------------------------------------
+
+    def sensitivity_analysis(
+        self,
+        S0: float,
+        K: float,
+        B: float,
+        T: float,
+        r: float,
+        sigma: float,
+        option_type: str,
+        N_sim: int,
+        N_steps: int,
+        parameter: str,
+        range_pct: float = 0.10,
+        num_points: int = 11,
+    ) -> Dict:
+        """Sweep one input parameter and record how the price changes.
+
+        Parameters
+        ----------
         parameter : str
-            Parameter to vary ('S0', 'sigma', 'r', etc.)
+            One of 'S0', 'K', 'B', 'T', 'r', 'sigma'.
         range_pct : float
-            Percentage range around base value to explore
+            Half-width of sweep as a fraction of the base value.
         num_points : int
-            Number of points in the sensitivity analysis
-        
-        Returns:
-        --------
-        dict
-            Dictionary containing sensitivity analysis results
+            Number of grid points.
+
+        Returns
+        -------
+        dict with keys: parameter, values, prices, base_value, base_price
         """
-        base_params = {'S0': S0, 'K': K, 'B': B, 'T': T, 'r': r, 'sigma': sigma}
-        base_value = base_params[parameter]
-        
-        # Create range of values
-        min_val = base_value * (1 - range_pct)
-        max_val = base_value * (1 + range_pct)
-        param_values = np.linspace(min_val, max_val, num_points)
-        
+        valid_params = {"S0", "K", "B", "T", "r", "sigma"}
+        if parameter not in valid_params:
+            raise ValueError(f"parameter must be one of {valid_params}")
+
+        base = {"S0": S0, "K": K, "B": B, "T": T, "r": r, "sigma": sigma}
+        base_value = base[parameter]
+        grid = np.linspace(base_value * (1 - range_pct), base_value * (1 + range_pct), num_points)
+
         prices = []
-        
-        for param_val in param_values:
-            # Update the parameter
-            current_params = base_params.copy()
-            current_params[parameter] = param_val
-            
-            # Price the option
-            price, _, _, _ = self.monte_carlo_pricer(
-                current_params['S0'], current_params['K'], current_params['B'],
-                current_params['T'], current_params['r'], current_params['sigma'],
-                option_type, N_sim, N_steps
+        for val in grid:
+            p_args = {**base, parameter: float(val)}
+            p, _, _, _ = self.monte_carlo_pricer(
+                p_args["S0"], p_args["K"], p_args["B"],
+                p_args["T"], p_args["r"], p_args["sigma"],
+                option_type, N_sim, N_steps,
             )
-            prices.append(price)
-        
+            prices.append(p)
+
         return {
-            'parameter': parameter,
-            'values': param_values,
-            'prices': prices,
-            'base_value': base_value,
-            'base_price': prices[num_points // 2]
+            "parameter": parameter,
+            "values": grid,
+            "prices": prices,
+            "base_value": base_value,
+            "base_price": prices[num_points // 2],
         }
 
-def print_detailed_results(price: float, conf_lower: float, conf_upper: float, 
-                          stats: dict, option_params: dict):
-    """Print detailed results of the barrier option pricing."""
-    print("\n" + "="*60)
-    print("BARRIER OPTION PRICING RESULTS")
-    print("="*60)
-    
-    # Option details
-    print(f"\nOption Type: {option_params['option_type'].replace('_', ' ').title()}")
-    print(f"Initial Asset Price (S0): ${option_params['S0']:.2f}")
-    print(f"Strike Price (K): ${option_params['K']:.2f}")
-    print(f"Barrier Level (B): ${option_params['B']:.2f}")
-    print(f"Time to Maturity (T): {option_params['T']:.4f} years")
-    print(f"Risk-free Rate (r): {option_params['r']:.2%}")
-    print(f"Volatility (σ): {option_params['sigma']:.2%}")
-    
-    # Simulation parameters
-    print(f"\nSimulation Parameters:")
-    print(f"Number of Simulations: {stats['effective_simulations']:,}")
-    print(f"Number of Time Steps: {option_params['N_steps']:,}")
-    print(f"Monitoring Type: {option_params.get('monitoring_type', 'discrete').title()}")
-    
-    # Results
-    print(f"\n" + "-"*30)
-    print("PRICING RESULTS")
-    print("-"*30)
-    print(f"Option Price: ${price:.6f}")
-    print(f"95% Confidence Interval: [${conf_lower:.6f}, ${conf_upper:.6f}]")
-    print(f"Monte Carlo Error: ±${stats['mc_error']:.6f}")
-    print(f"Convergence Ratio: {stats['convergence_ratio']:.4f}")
-    
-    # Additional statistics
-    print(f"\n" + "-"*30)
-    print("ADDITIONAL STATISTICS")
-    print("-"*30)
-    print(f"Mean Payoff (undiscounted): ${stats['mean_payoff']:.6f}")
-    print(f"Standard Deviation of Payoffs: ${stats['std_payoff']:.6f}")
-    print(f"Barrier Hit Percentage: {stats['barrier_hit_percentage']:.2f}%")
-    print(f"Computation Time: {stats['computation_time']:.3f} seconds")
 
-def main():
-    """Main function demonstrating the usage of the BarrierOptionsPricer."""
-    # Initialize the pricer
+# ---------------------------------------------------------------------------
+# Pretty-printer
+# ---------------------------------------------------------------------------
+
+def print_detailed_results(
+    price: float,
+    conf_lower: float,
+    conf_upper: float,
+    stats: Dict,
+    option_params: Dict,
+) -> None:
+    """Print a formatted summary of pricing results."""
+    width = 60
+    print("\n" + "=" * width)
+    print("BARRIER OPTION PRICING RESULTS")
+    print("=" * width)
+
+    print(f"\nOption Type : {option_params['option_type'].replace('_', ' ').title()}")
+    print(f"S0          : {option_params['S0']:.4f}")
+    print(f"K           : {option_params['K']:.4f}")
+    print(f"B           : {option_params['B']:.4f}")
+    print(f"T           : {option_params['T']:.4f} years")
+    print(f"r           : {option_params['r']:.4%}")
+    print(f"σ           : {option_params['sigma']:.4%}")
+
+    print(f"\nSimulation Parameters:")
+    print(f"  Paths     : {stats['effective_simulations']:,}")
+    print(f"  Steps     : {option_params['N_steps']:,}")
+    print(f"  Monitoring: {option_params.get('monitoring_type', 'discrete')}")
+
+    print(f"\n{'-' * 30}")
+    print("PRICING RESULTS")
+    print(f"{'-' * 30}")
+    cv = option_params.get("confidence_level", 0.95)
+    print(f"Price                : {price:.6f}")
+    print(f"{cv:.0%} Confidence Interval: [{conf_lower:.6f}, {conf_upper:.6f}]")
+    print(f"MC Standard Error    : ±{stats['mc_error']:.6f}")
+    print(f"Convergence Ratio    : {stats['convergence_ratio']:.4f}")
+
+    print(f"\n{'-' * 30}")
+    print("DIAGNOSTICS")
+    print(f"{'-' * 30}")
+    print(f"Mean Payoff (undiscounted): {stats['mean_payoff']:.6f}")
+    print(f"Payoff Std Dev            : {stats['std_payoff']:.6f}")
+    print(f"Barrier Hit Rate          : {stats['barrier_hit_percentage']:.2f}%")
+    print(f"Computation Time          : {stats['computation_time']:.3f}s")
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    """Interactive CLI for the barrier option pricer."""
     pricer = BarrierOptionsPricer()
-    
-    # Example parameters
-    example_params = {
-        'S0': 100.0,        # Initial asset price
-        'K': 100.0,         # Strike price
-        'B': 90.0,          # Barrier level
-        'T': 1.0,           # Time to maturity (1 year)
-        'r': 0.05,          # Risk-free rate (5%)
-        'sigma': 0.2,       # Volatility (20%)
-        'option_type': 'down_and_out_call',  # Option type
-        'N_sim': 100000,    # Number of simulations
-        'N_steps': 252,     # Number of time steps (daily monitoring)
-        'monitoring_type': 'discrete'
+
+    defaults = {
+        "S0": 100.0,
+        "K": 100.0,
+        "B": 90.0,
+        "T": 1.0,
+        "r": 0.05,
+        "sigma": 0.20,
+        "option_type": "down_and_out_call",
+        "N_sim": 100_000,
+        "N_steps": 252,
+        "monitoring_type": "discrete",
+        "confidence_level": 0.95,
     }
-    
+
     print("Monte Carlo Barrier Options Pricer")
     print("===================================")
-    
-    # Option 1: Use predefined parameters
-    use_default = input("Use default parameters? (y/n): ").lower().strip() == 'y'
-    
-    if not use_default:
-        # Get user inputs
-        print("\nEnter option parameters:")
+
+    if input("Use default parameters? (y/n): ").strip().lower() != "y":
         try:
-            example_params['S0'] = float(input(f"Initial asset price (default {example_params['S0']}): ") or example_params['S0'])
-            example_params['K'] = float(input(f"Strike price (default {example_params['K']}): ") or example_params['K'])
-            example_params['B'] = float(input(f"Barrier level (default {example_params['B']}): ") or example_params['B'])
-            example_params['T'] = float(input(f"Time to maturity in years (default {example_params['T']}): ") or example_params['T'])
-            example_params['r'] = float(input(f"Risk-free rate (default {example_params['r']}): ") or example_params['r'])
-            example_params['sigma'] = float(input(f"Volatility (default {example_params['sigma']}): ") or example_params['sigma'])
-            
-            print(f"\nAvailable option types: {pricer.valid_option_types}")
-            option_type_input = input(f"Option type (default {example_params['option_type']}): ").strip()
-            if option_type_input:
-                example_params['option_type'] = option_type_input
-            
-            example_params['N_sim'] = int(input(f"Number of simulations (default {example_params['N_sim']}): ") or example_params['N_sim'])
-            example_params['N_steps'] = int(input(f"Number of time steps (default {example_params['N_steps']}): ") or example_params['N_steps'])
-            
-            monitoring_input = input(f"Monitoring type - discrete/continuous_approx (default {example_params['monitoring_type']}): ").strip()
-            if monitoring_input:
-                example_params['monitoring_type'] = monitoring_input
-        except ValueError as e:
-            print(f"Invalid input: {e}. Using default parameters.")
-    
-    # Price the option
-    print("\nPricing the barrier option...")
-    price, conf_lower, conf_upper, stats = pricer.monte_carlo_pricer(
-        example_params['S0'], example_params['K'], example_params['B'],
-        example_params['T'], example_params['r'], example_params['sigma'],
-        example_params['option_type'], example_params['N_sim'], example_params['N_steps'],
-        example_params['monitoring_type']
+            for key in ("S0", "K", "B", "T", "r", "sigma"):
+                raw = input(f"  {key} (default {defaults[key]}): ").strip()
+                if raw:
+                    defaults[key] = float(raw)
+            print(f"  Available types: {pricer.valid_option_types}")
+            raw = input(f"  option_type (default {defaults['option_type']}): ").strip()
+            if raw:
+                defaults["option_type"] = raw
+            raw = input(f"  N_sim (default {defaults['N_sim']}): ").strip()
+            if raw:
+                defaults["N_sim"] = int(raw)
+            raw = input(f"  N_steps (default {defaults['N_steps']}): ").strip()
+            if raw:
+                defaults["N_steps"] = int(raw)
+            raw = input(
+                f"  monitoring_type discrete/continuous_approx "
+                f"(default {defaults['monitoring_type']}): "
+            ).strip()
+            if raw:
+                defaults["monitoring_type"] = raw
+        except ValueError as exc:
+            print(f"  Invalid input ({exc}), reverting to defaults.")
+
+    print("\nPricing…")
+    price, ci_lo, ci_hi, stats = pricer.monte_carlo_pricer(
+        defaults["S0"], defaults["K"], defaults["B"],
+        defaults["T"], defaults["r"], defaults["sigma"],
+        defaults["option_type"], defaults["N_sim"], defaults["N_steps"],
+        defaults["monitoring_type"], defaults["confidence_level"],
     )
-    
-    # Print detailed results
-    print_detailed_results(price, conf_lower, conf_upper, stats, example_params)
-    
-    # Optional: Perform additional analysis
-    additional_analysis = input("\nPerform additional analysis? (y/n): ").lower().strip() == 'y'
-    
-    if additional_analysis:
-        print("\n1. Convergence Analysis")
-        print("2. Sensitivity Analysis")
-        analysis_choice = input("Choose analysis type (1/2): ").strip()
-        
-        if analysis_choice == '1':
-            print("\nPerforming convergence analysis...")
-            convergence = pricer.analyze_convergence(
-                example_params['S0'], example_params['K'], example_params['B'],
-                example_params['T'], example_params['r'], example_params['sigma'],
-                example_params['option_type'], example_params['N_steps'],
-                monitoring_type=example_params['monitoring_type']
-            )
-            
-            print("\nConvergence Analysis Results:")
-            print("-" * 50)
-            print(f"{'Simulations':<12} {'Price':<12} {'MC Error':<12} {'Time (s)':<10}")
-            print("-" * 50)
-            for i, n_sim in enumerate(convergence['sim_counts']):
-                print(f"{n_sim:<12,} ${convergence['prices'][i]:<11.6f} ±{convergence['errors'][i]:<11.6f} {convergence['computation_times'][i]:<10.3f}")
-        
-        elif analysis_choice == '2':
-            print("\nAvailable parameters for sensitivity analysis:")
-            print("S0, K, B, T, r, sigma")
-            param = input("Choose parameter: ").strip()
-            
-            if param in ['S0', 'K', 'B', 'T', 'r', 'sigma']:
-                print(f"\nPerforming sensitivity analysis on {param}...")
-                sensitivity = pricer.sensitivity_analysis(
-                    example_params['S0'], example_params['K'], example_params['B'],
-                    example_params['T'], example_params['r'], example_params['sigma'],
-                    example_params['option_type'], example_params['N_sim']//5, 
-                    example_params['N_steps'], param
-                )
-                
-                print(f"\nSensitivity Analysis Results for {param}:")
-                print("-" * 40)
-                print(f"{'Value':<15} {'Option Price':<15}")
-                print("-" * 40)
-                for i, val in enumerate(sensitivity['values']):
-                    print(f"{val:<15.6f} ${sensitivity['prices'][i]:<15.6f}")
-            else:
-                print("Invalid parameter choice.")
+    print_detailed_results(price, ci_lo, ci_hi, stats, defaults)
+
+    if input("\nRun additional analysis? (y/n): ").strip().lower() != "y":
+        return
+
+    print("  1. Convergence analysis")
+    print("  2. Sensitivity analysis")
+    choice = input("  Choice (1/2): ").strip()
+
+    if choice == "1":
+        print("\nConvergence analysis…")
+        conv = pricer.analyze_convergence(
+            defaults["S0"], defaults["K"], defaults["B"],
+            defaults["T"], defaults["r"], defaults["sigma"],
+            defaults["option_type"], defaults["N_steps"],
+            monitoring_type=defaults["monitoring_type"],
+        )
+        hdr = f"{'Simulations':<14}{'Price':<14}{'MC Error':<14}{'Time (s)':<10}"
+        print(hdr)
+        print("-" * len(hdr))
+        for n, p, e, t in zip(conv["sim_counts"], conv["prices"],
+                               conv["errors"], conv["computation_times"]):
+            print(f"{n:<14,}{p:<14.6f}{e:<14.6f}{t:<10.3f}")
+
+    elif choice == "2":
+        print("  Parameters: S0 K B T r sigma")
+        param = input("  Parameter to vary: ").strip()
+        if param not in {"S0", "K", "B", "T", "r", "sigma"}:
+            print("  Invalid parameter.")
+            return
+        sens = pricer.sensitivity_analysis(
+            defaults["S0"], defaults["K"], defaults["B"],
+            defaults["T"], defaults["r"], defaults["sigma"],
+            defaults["option_type"], defaults["N_sim"] // 5,
+            defaults["N_steps"], param,
+        )
+        print(f"\nSensitivity to {param}:")
+        print(f"  {'Value':<14}{'Price':<14}")
+        print("  " + "-" * 28)
+        for v, p in zip(sens["values"], sens["prices"]):
+            print(f"  {v:<14.6f}{p:<14.6f}")
+
 
 if __name__ == "__main__":
-    # Import scipy.stats for confidence intervals
-    try:
-        from scipy import stats
-    except ImportError:
-        print("Warning: scipy not available. Using normal approximation for confidence intervals.")
-        # Fallback implementation using normal approximation
-        class stats:
-            class norm:
-                @staticmethod
-                def ppf(x):
-                    # Approximate inverse normal CDF for 95% confidence
-                    if abs(x - 0.975) < 1e-6:
-                        return 1.96
-                    elif abs(x - 0.95) < 1e-6:
-                        return 1.645
-                    else:
-                        # Simple approximation
-                        return x * 2
-    
     main()
