@@ -1,164 +1,124 @@
+# Options Market-Making Desk Analytics Toolkit
 
-# Options MM Desk Analytics Toolkit (Barrier Monte Carlo + IV/Greeks + Desk Scripts)
+A Python options analytics project built in two layers.
 
-A Python options analytics project with two layers:
+**Layer 1: Barrier option pricing** via Monte Carlo under risk-neutral GBM. Prices European knock-in and knock-out barriers (calls and puts) with discrete or continuous-approximation monitoring, optional antithetic variates, and full statistical output including confidence intervals and barrier hit rates.
 
-1) **Barrier option pricing** (European knock-in/knock-out barriers) via **Monte Carlo** under risk-neutral **GBM**, including confidence intervals and monitoring controls.
+**Layer 2: Vanilla listed options desk tooling.** Black-Scholes pricing, Greeks, implied volatility, per-expiry vol smile with optional SVI slice fitting, and desk-style scripts that turn a live or historical options chain into IV/Greeks, aggregated portfolio risk, and scenario PnL. A live data fetcher pulls real chains directly from Yahoo Finance so the full pipeline runs on actual market data.
 
-2) **Listed options desk tooling** for **vanilla European calls and puts**:
-   **Black–Scholes pricing**, **Greeks**, **implied volatility**, simple **vol smile** building (optional **SVI** slice fit), plus scripts that turn an **options chain snapshot + positions** into **IV/Greeks, aggregated risk, and scenario PnL**. (To be pushed shortly)
-
-If you are looking for “pricing”, this repo prices:
-- Barrier options via Monte Carlo (in `pricer/pricer.py`)
-- Vanilla European options via Black–Scholes (in `pricer/vanilla_bs.py`)
-
-If you are looking for “analytics”, this repo computes analytics for:
-- Vanilla European options (IV, Greeks, smile, risk reports, hedged PnL)
-
-Barrier options are priced, but the IV/Greeks and risk scripts are aimed at **vanilla listed options**, which is closer to how an options market-making desk works day to day.
+The analytics layer is deliberately modelled on what a vanilla options market-making desk uses day to day: chain in, IV and Greeks out, positions joined to chain, risk aggregated by underlying and expiry, spot and vol scenarios run against the book.
 
 ---
 
 ## Features
 
 ### Barrier option Monte Carlo pricer
-- **Barrier types**
-  - Down-and-Out (Call/Put)
-  - Up-and-Out (Call/Put)
-  - Down-and-In (Call/Put)
-  - Up-and-In (Call/Put)
-- **Underlying model**: Geometric Brownian Motion under the risk-neutral measure
-- **Monitoring**
-  - Discrete monitoring (barrier checked each time step)
-  - Continuous monitoring approximation via a continuity correction
-- **Variance reduction**: optional antithetic variates
-- **Statistical output**: price, confidence interval, Monte Carlo standard error, barrier hit rate, runtime
-- **Analysis tools**
-  - Convergence analysis vs number of simulations
-  - Sensitivity analysis over S0, K, B, T, r, sigma
-- **CLI**: interactive prompt for pricing and optional analyses
 
-### Vanilla options analytics (European)
-- **Black–Scholes pricing** for call/put with optional dividend yield
-- **Greeks**: delta, gamma, vega, theta, rho
-- **Implied volatility** solver for call/put (market price to IV)
-- **Vol smile (MVP)**
-  - Build a per-expiry smile from a chain snapshot
-  - Optional SVI slice fitting (stretch)
+- Barrier types: down-and-out, up-and-out, down-and-in, up-and-in (call and put)
+- GBM simulation under the risk-neutral measure
+- Discrete barrier monitoring and continuous-approximation via Broadie-Glasserman-Kou continuity correction
+- Optional antithetic variates for variance reduction
+- Output: price, confidence interval, Monte Carlo standard error, barrier hit rate, runtime
+- Convergence analysis across simulation counts
+- Sensitivity analysis over S0, K, B, T, r, sigma
+- Interactive CLI
 
-### Desk-style scripts
-- **Chain to IV/Greeks**: compute mid, IV and Greeks per option line from a chain snapshot
-- **Portfolio risk report**: join positions to chain, compute IV/Greeks per line, aggregate exposures by underlying and expiry, and run spot and vol shock scenario PnL
-- **Position reconciliation (optional)**: basic key coverage checks between positions and chain
+### Vanilla options analytics
+
+- Black-Scholes pricing for European calls and puts with optional continuous dividend yield
+- Full Greeks: delta, gamma, vega, theta, rho
+- Implied volatility solver (Brent's method) with vectorised wrapper for chain-level computation
+- Per-expiry vol smile builder and plotter
+- Raw SVI parametrisation and slice fitter
+
+### American options
+
+- Cox-Ross-Rubinstein binomial tree pricer for American and European exercise
+- Backward induction with early exercise at each node
+- Delta, gamma and theta from the tree
+- Optional early exercise boundary tracking
+
+### Desk scripts
+
+- `chain_to_iv_greeks.py`: compute IV and all five Greeks for every row in a chain snapshot
+- `portfolio_risk_report.py`: join a positions book to a chain, compute per-line IV/Greeks, aggregate dollar Greeks by underlying and expiry, run a spot-and-vol scenario PnL grid
+- `reconcile_positions.py`: flag position rows with no matching line in the chain
+
+### Live data
+
+- `data/fetch_chain.py`: fetch a live options chain from Yahoo Finance, pull spot, risk-free rate (13-week T-bill via ^IRX) and dividend yield automatically, apply liquidity filters, and write output in the project's standard CSV format so it drops straight into any of the desk scripts
 
 ### Notebooks
-- Barrier notebooks (original): GBM simulation, barrier pricing examples, convergence, sensitivity, continuity correction impact
-- Desk notebooks:
-  - `06_iv_smile.ipynb`: build and plot a simple IV smile from chain data
-  - `07_risk_report.ipynb`: run the risk report workflow and inspect outputs
-  - `08_delta_hedged_pnl.ipynb`: simulate a discrete delta hedge and plot hedged PnL
+
+- `01` to `05`: GBM simulation, barrier pricing examples, convergence analysis, sensitivity analysis, continuity correction impact
+- `06_iv_smile.ipynb`: build, plot and SVI-fit a vol smile from chain data
+- `07_risk_report.ipynb`: end-to-end risk report workflow with scenario PnL
+- `08_delta_hedged_pnl.ipynb`: discrete delta hedge simulation, single path and multi-path terminal PnL distribution
 
 ### Tests
-- `tests/test_bs.py`: Black–Scholes sanity checks (known value, parity, bounds)
-- `tests/test_iv.py`: IV round-trip tests, including vectorised inputs
+
+- `tests/test_bs.py`: Black-Scholes sanity checks covering known values, put-call parity, Greek bounds and numerical Greeks
+- `tests/test_iv.py`: IV round-trip tests across strikes, expiries and option types, including vectorised inputs
 
 ---
 
 ## Project structure
 
-````
+```
 pricer/
-  pricer.py              barrier Monte Carlo engine and interactive CLI
-  helper.py              plotting utilities for convergence and sensitivity
-  vanilla_bs.py          Black–Scholes pricing for vanilla European options
-  greeks_bs.py           Black–Scholes Greeks
-  implied_vol.py         implied volatility solver
-  vol_smile.py           per-expiry smile utilities
-  svi.py                 SVI slice fit (stretch)
+  __init__.py                  package exports
+  barrier_options_pricer.py    Monte Carlo barrier engine
+  helper.py                    convergence and sensitivity plotting utilities
+  vanilla_bs.py                Black-Scholes pricer for European calls and puts
+  greeks_bs.py                 Black-Scholes Greeks: delta, gamma, vega, theta, rho
+  implied_vol.py               implied vol solver (Brent) and vectorised wrapper
+  vol_smile.py                 per-expiry smile builder and plotter
+  svi.py                       raw SVI parametrisation and slice fitter
+  crr_american.py              CRR binomial tree pricer for American and European options
 
 scripts/
-  chain_to_iv_greeks.py
-  portfolio_risk_report.py
-  reconcile_positions.py
+  chain_to_iv_greeks.py        CLI: chain snapshot to IV and Greeks CSV
+  portfolio_risk_report.py     CLI: positions + chain to risk report and scenario PnL
+  reconcile_positions.py       CLI: flag unmatched position rows
 
 data/
-  sample_chain.csv
-  sample_positions.csv
+  fetch_chain.py               fetch a live chain from Yahoo Finance
+  sample_chain.csv             synthetic reference chain (AAPL, MSFT, two expiries each)
+  sample_positions.csv         synthetic reference book (iron condor, spreads, straddle)
 
 notebooks/
+  01_GBM_Simulation_Demo.ipynb
+  02_Barrier_Option_Pricing_Examples.ipynb
+  03_Convergence_Analysis.ipynb
+  04_Sensitivity_Analysis.ipynb
+  05_Continuity_Correction_Impact.ipynb
   06_iv_smile.ipynb
   07_risk_report.ipynb
   08_delta_hedged_pnl.ipynb
-  (plus existing barrier notebooks)
 
 tests/
   test_bs.py
   test_iv.py
-````
-
----
-
-## Theoretical background
-
-### Barrier options
-
-Barrier options are path-dependent options whose payoff depends on whether the underlying crosses a barrier level (B) during the option’s life.
-
-* **Knock-out** options expire worthless if the barrier is breached.
-* **Knock-in** options only become active if the barrier is breached.
-
-### Geometric Brownian Motion under the risk-neutral measure
-
-The underlying (S_t) is modelled as GBM under the risk-neutral measure:
-$$[
-dS_t = r S_t dt + \sigma S_t dW_t
-]$$
-Discretised simulation step:
-$$[
-S_{t+\Delta t} = S_t \exp\left((r - \tfrac{1}{2}\sigma^2)\Delta t + \sigma\sqrt{\Delta t},Z\right),
-\quad Z \sim \mathcal{N}(0, 1)
-]$$
-### Monte Carlo pricing
-
-Option value is the discounted expected payoff under the risk-neutral measure:
-$$[
-V_0 = e^{-rT}\mathbb{E}_Q[\text{Payoff}]
-]$$
-Monte Carlo estimates this by simulating many paths, applying barrier conditions, averaging payoffs, and reporting estimation error and a confidence interval.
-
-### Black–Scholes, Greeks, and implied volatility (vanilla only)
-
-For vanilla European options, Black–Scholes provides closed-form prices and Greeks under the standard assumptions.
-Implied volatility is the volatility parameter that makes the model price match a market mid, found via root-finding.
-
-### Volatility smile and SVI (optional)
-
-A volatility smile describes how implied volatility varies with strike for a given expiry. SVI is a common parametric form used to fit a smooth smile slice.
+```
 
 ---
 
 ## Setup and installation
 
-### Requirements
-
-* Python 3.8+
-* Dependencies in `requirements.txt` (typically includes `numpy`, `scipy`, `pandas`, `matplotlib`)
-* `pytest` for running tests
-
-### Install
+**Requirements:** Python 3.8+, `pytest` for running tests.
 
 ```bash
 git clone https://github.com/xas-L/barrier-option-pricer.git
 cd barrier-option-pricer
 
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
 pip install -r requirements.txt
 pip install -e .
 ```
 
-### Run tests
+**Run tests:**
 
 ```bash
 pytest -q
@@ -168,103 +128,190 @@ pytest -q
 
 ## Usage
 
-### 1) Barrier Monte Carlo pricer (interactive CLI)
+### 1. Barrier Monte Carlo pricer
 
 ```bash
-python pricer/pricer.py
+python pricer/barrier_options_pricer.py
 ```
 
-The CLI prompts for:
+The interactive CLI prompts for S0, K, B, T, r, sigma, option type (e.g. `down_and_out_call`), number of simulations and time steps, monitoring type (`discrete` or `continuous_approx`), and optional convergence and sensitivity analyses.
 
-* S0, K, B, T, r, sigma
-* option type (for example `down_and_out_call`)
-* number of simulations and time steps
-* monitoring type (`discrete` or `continuous_approx`)
-* optional convergence and sensitivity analyses
-
-### 2) Chain to IV and Greeks (vanilla options)
+### 2. Fetch a live chain
 
 ```bash
-python scripts/chain_to_iv_greeks.py --help
-python scripts/chain_to_iv_greeks.py --chain data/sample_chain.csv --out out_chain_iv_greeks.csv
+# All available expiries for one or more tickers
+python data/fetch_chain.py --tickers AAPL MSFT
+
+# Specific expiries
+python data/fetch_chain.py --tickers SPY --expiries 2025-06-20 2025-09-19
+
+# With liquidity filters and custom output path
+python data/fetch_chain.py --tickers AAPL --min-bid 0.10 --min-volume 10 --min-oi 100 --out data/aapl_live.csv
 ```
 
-Use `--help` to see the exact arguments supported in your version.
+Spot is pulled from 2-day price history. The risk-free rate is fetched from `^IRX` (13-week T-bill) and falls back to `--r-fallback` if the feed is unavailable. Dividend yield comes from ticker metadata.
 
-### 3) Portfolio risk report (vanilla options)
+The three liquidity filters are:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--min-bid` | 0.05 | Drop rows where bid is below this level |
+| `--min-volume` | 0 | Drop rows with daily volume below this |
+| `--min-oi` | 0 | Drop rows with open interest below this |
+
+### 3. Chain to IV and Greeks
 
 ```bash
-python scripts/portfolio_risk_report.py --help
-python scripts/portfolio_risk_report.py --positions data/sample_positions.csv --chain data/sample_chain.csv --outdir out_risk
+python scripts/chain_to_iv_greeks.py --chain data/sample_chain.csv --out out/chain_iv_greeks.csv
+
+# On live data
+python scripts/chain_to_iv_greeks.py --chain data/live_chain.csv --out out/live_iv_greeks.csv
 ```
 
-Typical outputs include:
+Adds `iv`, `delta`, `gamma`, `vega`, `theta`, `rho` columns to every row in the chain. Where IV cannot be solved (e.g. zero-bid row that passed filters), IV is recorded as `nan` and Greeks fall back to a flat vol estimate.
 
-* per-line positions with IV/Greeks
-* aggregated risk by underlying and expiry
-* scenario PnL from spot and vol shocks
+### 4. Portfolio risk report
 
-### 4) Notebooks
+```bash
+python scripts/portfolio_risk_report.py \
+  --positions data/sample_positions.csv \
+  --chain data/sample_chain.csv \
+  --outdir out/risk
+
+# On live data
+python scripts/portfolio_risk_report.py \
+  --positions data/sample_positions.csv \
+  --chain data/live_chain.csv \
+  --outdir out/live_risk
+```
+
+Outputs written to `--outdir`:
+
+| File | Contents |
+|---|---|
+| `positions_with_greeks.csv` | Per-line IV, Greeks and dollar Greeks |
+| `risk_by_underlying.csv` | Dollar Greeks aggregated by underlying |
+| `risk_by_expiry.csv` | Dollar Greeks aggregated by underlying and expiry |
+| `scenario_pnl.csv` | First-order PnL across a 7x5 spot and vol shock grid |
+
+Dollar Greeks use a contract multiplier of 100. Dollar delta is `delta * qty * 100 * spot`. Dollar gamma is scaled per 1% move. Dollar vega is per vol point. Dollar theta is daily.
+
+### 5. Position reconciliation
+
+```bash
+python scripts/reconcile_positions.py \
+  --positions data/sample_positions.csv \
+  --chain data/sample_chain.csv
+```
+
+Prints any position rows with no matching `(underlying, expiry, cp, K)` key in the chain.
+
+### 6. Notebooks
 
 ```bash
 jupyter lab
 ```
 
-Open:
-
-* `notebooks/06_iv_smile.ipynb`
-* `notebooks/07_risk_report.ipynb`
-* `notebooks/08_delta_hedged_pnl.ipynb`
+The three desk notebooks (`06`, `07`, `08`) import directly from the `pricer` and `scripts` packages. Swap the chain path from `sample_chain.csv` to `live_chain.csv` to run the full workflow on live data.
 
 ---
 
 ## Data formats
 
-### `data/sample_chain.csv`
-
-Minimum expected columns for the desk scripts:
-
-* `underlying`
-* `expiry`
-* `cp` (call/put or c/p)
-* `K` (strike)
-* `T` (time to expiry in years)
-* `mid` (or `bid` and `ask`)
-
-Optional (recommended where available):
-
-* `spot`
-* `r` (rate)
-* `q` (dividend yield)
-
-### `data/sample_positions.csv`
+### Chain CSV
 
 Required columns:
 
-* `underlying`
-* `expiry`
-* `cp`
-* `K`
-* `qty`
+| Column | Description |
+|---|---|
+| `underlying` | Ticker symbol |
+| `expiry` | Expiry date (YYYY-MM-DD) |
+| `cp` | `call` or `put` |
+| `K` | Strike |
+| `T` | Time to expiry in years |
+| `spot` | Underlying spot price |
+| `mid` | Option mid price (or `bid` and `ask` to compute mid) |
 
-Notes:
+Optional but recommended:
 
-* The portfolio scripts assume a **contract multiplier of 100** when converting Greeks into exposures.
+| Column | Description |
+|---|---|
+| `r` | Risk-free rate (falls back to `--r` CLI argument if absent) |
+| `q` | Continuous dividend yield (defaults to 0.0) |
+
+`data/fetch_chain.py` writes all of these columns automatically.
+
+### Positions CSV
+
+Required columns:
+
+| Column | Description |
+|---|---|
+| `underlying` | Ticker symbol |
+| `expiry` | Expiry date (YYYY-MM-DD), must match chain |
+| `cp` | `call` or `put` |
+| `K` | Strike, must match chain |
+| `qty` | Signed quantity in contracts (negative = short) |
+
+---
+
+## Theoretical background
+
+### Barrier options
+
+Barrier options are path-dependent: the payoff depends on whether the underlying crosses a barrier level B during the option's life. Knock-out options expire worthless if the barrier is breached; knock-in options only become active if it is.
+
+### GBM under the risk-neutral measure
+
+The underlying is modelled as GBM:
+
+$$dS_t = r S_t \, dt + \sigma S_t \, dW_t$$
+
+Discretised for simulation:
+
+$$S_{t+\Delta t} = S_t \exp\!\left(\left(r - \tfrac{1}{2}\sigma^2\right)\Delta t + \sigma\sqrt{\Delta t}\, Z\right), \quad Z \sim \mathcal{N}(0,1)$$
+
+### Monte Carlo pricing
+
+$$V_0 = e^{-rT}\,\mathbb{E}_Q\!\left[\text{Payoff}\right]$$
+
+Estimated by simulating $N$ paths, applying barrier conditions to each, averaging discounted payoffs, and reporting a confidence interval via the central limit theorem. Error shrinks as $1/\sqrt{N}$.
+
+### Black-Scholes and Greeks
+
+For vanilla European options, Black-Scholes gives a closed-form price under the assumptions of constant vol, rates, and no jumps. The Greeks are analytic partial derivatives of the price with respect to each input. Implied volatility inverts this: given a market mid, find the volatility that makes the model price match.
+
+### Continuity correction
+
+Discrete barrier monitoring underestimates knock-out probability relative to continuous monitoring. The Broadie-Glasserman-Kou correction adjusts the barrier by $\pm\beta\sigma\sqrt{\Delta t}$ (where $\beta \approx 0.5826$) to approximate the continuous-monitoring price using a discrete simulation.
+
+### SVI
+
+Raw SVI parametrises the total implied variance $w(k) = \sigma_{\text{imp}}^2 T$ as a function of log-moneyness $k = \log(K/F)$:
+
+$$w(k) = a + b\!\left(\rho(k-m) + \sqrt{(k-m)^2 + \sigma^2}\right)$$
+
+Five parameters $(a, b, \rho, m, \sigma)$ are fitted by least squares. SVI is a common parametric form for fitting a smooth smile slice in practice.
+
+### CRR binomial tree
+
+The Cox-Ross-Rubinstein tree discretises the stock price into up and down moves $u = e^{\sigma\sqrt{\Delta t}}$, $d = 1/u$ with risk-neutral probability $p = (e^{(r-q)\Delta t} - d)/(u - d)$. Backward induction computes option values at each node. For American options, the value at each node is $\max(\text{hold value}, \text{intrinsic value})$.
 
 ---
 
 ## Limitations
 
-* Barrier pricer assumes GBM, constant rates, vol, and European exercise.
-* Continuity correction is an approximation intended to reduce discrete-monitoring bias.
-* The listed options layer uses Black–Scholes assumptions + is intended for analytics and prototyping, not prod rn.
+- The barrier pricer assumes GBM with constant rates and volatility and European exercise only.
+- The continuity correction is an approximation. For accurate continuous-monitoring prices, increase `N_steps` rather than relying on the correction alone.
+- Black-Scholes assumes constant vol, no jumps, and continuous trading. It is used here as an analytics and calibration tool, not a production pricing model.
+- N.B. Yahoo Finance data can be delayed outside market hours and bid/ask quotes may be stale for illiquid strikes. The fetch script warns when this is likely. For production use a proper market data vendor.
+- Dollar Greeks in the risk report are first-order approximations. Scenario PnL uses delta and vega only and does not account for gamma, cross-effects, or term structure.
+- The SVI fitter minimises unweighted least squares. In practice you would weight by bid/ask spread or vega to avoid fitting noise in illiquid wings.
 
 ---
 
 ## Roadmap
 
-* Add American pricer
-* Add basic CI to run pytest on pushes
-* Extend reconciliation and data quality checks for chain and positions inputs
-* Improve surface handling across expiries (beyond per-expiry smile)
-
+- Add GitHub Actions CI to run pytest on push
+- Extend reconciliation with data quality checks on chain inputs (duplicate keys, stale quotes, missing spots)
+- Improve surface handling across expiries with calendar spread arbitrage checks
