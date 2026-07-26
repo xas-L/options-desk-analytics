@@ -67,7 +67,7 @@ Despite the friction, it was a really fun project. Debugging all the numerical e
 
 ## Research Notes
 
-These are short, standalone research notes applying the `odx` tooling and the adjacent real-data pipeline to specific quantitative problems.
+These are short, standalone research notes applying the odx tooling and the adjacent real-data pipeline to specific quantitative problems.
 
-- [Dividend timing and the equity index forward: a real-data check on FEZ](docs/research/equity_index_forward_fez.pdf) -- uses real FEZ (EURO STOXX 50 proxy) options data to quantify how much a naive continuous dividend yield mis-specifies the forward versus a discrete real-dividend schedule.
-- [Barrier options pricing](docs/research/barrier_options_pricing.pdf) -- notes on barrier option pricing and continuity corrections.
+- [Dividend timing and the equity index forward: a real-data check on FEZ](docs/research/equity_index_forward_fez.pdf) - uses real FEZ (EURO STOXX 50 proxy) options data to quantify how much a naive continuous dividend yield mis-specifies the forward versus a discrete real-dividend schedule.
+- [Barrier options pricing](docs/research/barrier_options_pricing.pdf) - notes on barrier option pricing and continuity corrections.
