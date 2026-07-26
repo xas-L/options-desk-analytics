@@ -195,3 +195,71 @@ class TestImpliedBorrowCurve:
         result = implied_borrow_curve(S, fwd_curve, q=q)
         assert "borrow_cost" in result.columns
         np.testing.assert_allclose(result["borrow_cost"].values, [borrow, borrow], atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Edge-case gap tests
+# ---------------------------------------------------------------------------
+
+class TestBootstrapForwardEdgeCases:
+    def test_all_negative_forwards_returns_nan(self) -> None:
+        """When all per-strike F estimates are negative, should return NaN."""
+        # Use very low strikes so K cannot offset the large negative (C - P) term.
+        # F = K + e^{rT}(C - P);  with C=0.02, P=50.5, e^{rT}~1.05:
+        # F ~ K + 1.05*(0.02 - 50.5) ~ K - 53.0  =>  need K < 53
+        rows = []
+        base = {
+            "underlying": "TEST", "expiry": "2027-06-20", "T": 1.0,
+            "spot": 100.0, "r": 0.05, "q": 0.0,
+            "volume": 100, "openInterest": 500,
+        }
+        for K in [1.0, 2.0, 3.0]:
+            rows.append({**base, "cp": "call", "K": K, "bid": 0.01, "ask": 0.03, "mid": 0.02})
+            rows.append({**base, "cp": "put", "K": K, "bid": 50.0, "ask": 51.0, "mid": 50.5})
+        df = pd.DataFrame(rows)
+        assert np.isnan(bootstrap_forward(df))
+
+    def test_calls_only_returns_nan(self) -> None:
+        """A chain with only calls (no puts) has no matched pairs."""
+        df = _synthetic_chain()
+        df = df[df["cp"] == "call"]
+        assert np.isnan(bootstrap_forward(df))
+
+    def test_puts_only_returns_nan(self) -> None:
+        """A chain with only puts (no calls) has no matched pairs."""
+        df = _synthetic_chain()
+        df = df[df["cp"] == "put"]
+        assert np.isnan(bootstrap_forward(df))
+
+
+class TestCurveFallbackNoRColumn:
+    def test_dividend_curve_without_r_column(self) -> None:
+        """When forward_curve has no 'r' column, should fall back to r=0.0."""
+        S, T = 100.0, 1.0
+        F = 102.0  # implies q = 0 - ln(102/100)/1 = -0.0198...
+        fwd_curve = pd.DataFrame({
+            "expiry": ["2027-06-20"],
+            "T": [T],
+            "F": [F],
+            # No "r" column
+        })
+        result = implied_dividend_curve(S, fwd_curve)
+        # With r=0.0: q = 0.0 - ln(102/100) / 1.0
+        expected_q = 0.0 - np.log(F / S) / T
+        np.testing.assert_allclose(result["q_implied"].values, [expected_q], atol=1e-12)
+
+    def test_borrow_curve_without_r_column(self) -> None:
+        """When forward_curve has no 'r' column, should fall back to r=0.0."""
+        S, T, q = 100.0, 1.0, 0.01
+        F = 102.0
+        fwd_curve = pd.DataFrame({
+            "expiry": ["2027-06-20"],
+            "T": [T],
+            "F": [F],
+            # No "r" column
+        })
+        result = implied_borrow_curve(S, fwd_curve, q=q)
+        # With r=0.0: b = ln(F/S)/T - 0.0 + q
+        expected_b = np.log(F / S) / T - 0.0 + q
+        np.testing.assert_allclose(result["borrow_cost"].values, [expected_b], atol=1e-12)
+

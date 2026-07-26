@@ -159,3 +159,28 @@ class TestCleanChain:
         clean, flagged = clean_chain(df)
         assert len(clean) == 2
         assert flagged.empty
+
+    def test_flag_crossed_disabled(self) -> None:
+        """When flag_crossed=False, crossed markets are kept."""
+        df = _make_chain([
+            _make_row(bid=5.0, ask=5.5),
+            _make_row(bid=6.0, ask=5.0),  # crossed but kept
+        ])
+        clean, flagged = clean_chain(df, flag_crossed=False)
+        assert len(clean) == 2
+
+    def test_sequential_flag_order_expired_before_crossed(self) -> None:
+        """An expired AND crossed row should be flagged as 'expired', not 'crossed',
+        because expired is checked first in the pipeline."""
+        df = _make_chain([_make_row(T=0.0, bid=10.0, ask=5.0)])
+        _, flagged = clean_chain(df)
+        assert len(flagged) == 1
+        assert "expired" in flagged.iloc[0]["flag_reason"]
+
+    def test_chain_snapshot_custom_timestamp(self) -> None:
+        from datetime import datetime
+        ts = datetime(2027, 1, 15, 10, 30, 0)
+        df = _make_chain([_make_row()])
+        snap = ChainSnapshot.from_dataframe(df, timestamp=ts)
+        assert snap.timestamp == ts
+
