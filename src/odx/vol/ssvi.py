@@ -58,10 +58,7 @@ def ssvi_total_variance(
     eta, gamma : float
         Parameters for phi(theta).
         
-    Returns
-    -------
-    ndarray
-        Total implied variance w(k, t).
+    Returns an ndarray of total implied variance w(k, t).
     """
     t_safe = np.maximum(t, 1e-12)
     theta = A * t_safe**B
@@ -124,21 +121,8 @@ def fit_ssvi_surface(
     Assumes df has columns: 'K', 'F', 'T', 'iv'
     where 'F' is the forward price and 'iv' is the implied volatility.
     
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Market data slice.
-    check_arb : bool
-        If True, apply penalty for static arbitrage conditions.
-        
-    Returns
-    -------
-    params : ndarray
-        Fitted parameters [A, B, rho, eta, gamma].
-    rmse : float
-        RMSE in total variance space.
-    info : dict
-        Optimizer diagnostics and arb status.
+    Returns an array of fitted parameters [A, B, rho, eta, gamma] & an rmse 
+    in total variance space, and optimizer diagnostics.
     """
     # Extract data
     F = df["F"].values
@@ -188,8 +172,8 @@ def fit_ssvi_surface(
     
     if check_arb:
         penalty = check_ssvi_arbitrage(params[0], params[1], params[2], params[3], params[4], t_grid)
-        info["arb_penalty"] = penalty
-        info["arbitrage_free"] = (penalty == 0.0)
+        info["arb_penalty"] = float(penalty)
+        info["arbitrage_free"] = bool(penalty == 0.0)
         
         if penalty > 0:
             warnings.warn("SSVI calibration converged but arbitrage conditions are violated.")
