@@ -51,7 +51,7 @@ from __future__ import annotations
 from typing import Optional, Tuple, Union
 
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import differential_evolution
 
 
 # -
@@ -184,6 +184,31 @@ def check_butterfly_arb(
     return g_min, g_min >= 0.0
 
 
+def check_calendar_arb(
+    params_t1: np.ndarray,
+    params_t2: np.ndarray,
+    k_min: float = -1.5,
+    k_max: float = 1.5,
+    n_points: int = 500,
+) -> Tuple[float, bool]:
+    """Check static calendar arb between two SVI slices (T1 < T2).
+
+    Calendar arb exists if total variance w(k, T2) < w(k, T1) for any k.
+    
+    Returns
+    -
+    min_diff - Min of w(k, T2) - w(k, T1). min_diff < 0 indicates arb.
+    is_arbitrage_free (bool) True if min_diff >= 0.
+    """
+    k_grid = np.linspace(k_min, k_max, n_points)
+    w1 = svi_total_variance(k_grid, *params_t1)
+    w2 = svi_total_variance(k_grid, *params_t2)
+    diff = w2 - w1
+    min_diff = float(diff.min())
+    return min_diff, min_diff >= 0.0
+
+
+
 # -
 # Weighting helpers
 # -
@@ -224,7 +249,7 @@ def _spread_weights(bid: np.ndarray, ask: np.ndarray) -> np.ndarray:
     Returns
     -
     ndarray
-        Non-negative weight vector, normalised to sum to len(bid).
+         a non-negative weight vector, normalised to sum to len(bid).
     """
     spread = np.maximum(ask - bid, 1e-6)   # avoid division by zero
     raw = 1.0 / spread
@@ -345,8 +370,6 @@ def fit_svi(
         w_fit = svi_total_variance(k, a, b, rho, m, sig)
         return float(np.sum(((w_fit - w_obs) * w_vec) ** 2))
 
-    # Starting guess: level at mean observed variance, moderate wings
-    x0 = np.array([np.mean(w_obs), 0.10, 0.0, 0.0, 0.10])
     bounds = [
         (-1.0,  1.0),    # a  — total variance can be small but not negative at ATM
         (1e-6,  2.0),    # b
@@ -355,7 +378,7 @@ def fit_svi(
         (1e-4,  2.0),    # sigma
     ]
 
-    result = minimize(objective, x0, method="L-BFGS-B", bounds=bounds)
+    result = differential_evolution(objective, bounds=bounds, seed=42)
     params = result.x
 
     # RMSE in total-variance space (unweighted, for interpretability)
