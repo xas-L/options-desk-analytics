@@ -14,11 +14,10 @@ New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 
 Set-Location $BuildDir
 
-Write-Host "Configuring CMake (using default compiler, typically MSVC on Windows)..."
-Write-Host "Note: If CMake cannot find your compiler, please run this script from inside the 'x64 Native Tools Command Prompt for VS'."
-cmake ..
+Write-Host "Configuring CMake (using MinGW Makefiles)..."
+$PythonPath = (Get-Command python).Source
+cmake -G "MinGW Makefiles" -DPython3_EXECUTABLE="$PythonPath" ..
 
-Write-Host "Building Release configuration..."
 cmake --build . --config Release
 
 Set-Location ..\..

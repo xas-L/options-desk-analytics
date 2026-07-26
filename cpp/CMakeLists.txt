@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.15)
 project(odx_cpp_pricer)
 
 # Requires Python3 and pybind11
@@ -23,6 +23,7 @@ endif()
 
 # Define _USE_MATH_DEFINES for MSVC to ensure math constants (like M_PI) are available
 target_compile_definitions(bs_pricer_cpp PRIVATE _USE_MATH_DEFINES)
+target_compile_features(bs_pricer_cpp PRIVATE cxx_std_17)
 
 # Direct the compiled library to the python src folder
 set_target_properties(bs_pricer_cpp PROPERTIES 
