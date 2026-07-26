@@ -3,9 +3,6 @@
 Tenor strings follow the standard market format:
   "1D" = 1 calendar day, "2W" = 2 weeks, "3M" = 3 months, "1Y" = 1 year.
 
-Day-count conventions are also accessible via :func:`year_fraction` in
-:mod:`odx.types`; this module exposes them as a first-class enum for use
-in configuration and serialisation.
 """
 
 from __future__ import annotations
@@ -18,9 +15,8 @@ from typing import Union
 from dateutil.relativedelta import relativedelta  # type: ignore[import]
 
 
-# ---------------------------------------------------------------------------
+
 # Day-count convention enum
-# ---------------------------------------------------------------------------
 
 
 class DayCountConvention(str, Enum):
@@ -31,9 +27,9 @@ class DayCountConvention(str, Enum):
     THIRTY_360 = "30/360"
 
 
-# ---------------------------------------------------------------------------
+
 # Tenor parsing
-# ---------------------------------------------------------------------------
+
 
 _TENOR_RE = re.compile(r"^(\d+)\s*([DWMY])$", re.IGNORECASE)
 
@@ -42,20 +38,6 @@ def parse_tenor(tenor: str) -> timedelta:
     """Parse a tenor string into a :class:`~datetime.timedelta`.
 
     Supported units: D (day), W (week), M (month × 30 days), Y (year × 365 days).
-
-    Parameters
-    ----------
-    tenor : str
-        E.g. ``"1D"``, ``"2W"``, ``"3M"``, ``"1Y"``.
-
-    Returns
-    -------
-    timedelta
-
-    Raises
-    ------
-    ValueError
-        If *tenor* cannot be parsed.
 
     Examples
     --------
@@ -94,16 +76,6 @@ def tenor_to_date(
     For month / year tenors this uses ``dateutil.relativedelta`` so that
     "1M" from 31 Jan lands on 28 Feb, not 2 Mar.
 
-    Parameters
-    ----------
-    tenor : str or timedelta
-        E.g. ``"3M"`` or ``timedelta(days=90)``.
-    reference : date, optional
-        Anchor date; defaults to today.
-
-    Returns
-    -------
-    date
     """
     if reference is None:
         reference = date.today()

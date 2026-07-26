@@ -8,9 +8,9 @@ import pytest
 from odx.data.cboe import CboeDelayedSource
 from odx.data.yahoo import YahooFinanceSource
 
-# ---------------------------------------------------------------------------
+
 # Test CboeDelayedSource
-# ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def mock_cboe_response() -> dict:
@@ -87,9 +87,9 @@ def test_cboe_source_expiry_filtering(mock_cboe_response: dict) -> None:
         df2 = source.get_option_chain("AAPL", expiries=[date(2027, 7, 18)])
         assert len(df2) == 0
 
-# ---------------------------------------------------------------------------
+
 # Test YahooFinanceSource
-# ---------------------------------------------------------------------------
+
 
 class DummyYahooOptionChain:
     def __init__(self):

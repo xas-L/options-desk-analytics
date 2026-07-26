@@ -53,9 +53,9 @@ all = ["odx[data,viz,dev]"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# ---------------------------------------------------------------------------
+
 # pytest
-# ---------------------------------------------------------------------------
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers -v"
@@ -63,9 +63,9 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
 
-# ---------------------------------------------------------------------------
+
 # ruff
-# ---------------------------------------------------------------------------
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
@@ -74,9 +74,9 @@ target-version = "py311"
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 ignore = ["E501"]  # line length handled by formatter
 
-# ---------------------------------------------------------------------------
+
 # mypy
-# ---------------------------------------------------------------------------
+
 [tool.mypy]
 python_version = "3.11"
 warn_return_any = true

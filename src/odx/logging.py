@@ -20,8 +20,8 @@ _CONFIGURED = False
 
 
 def _configure_root() -> None:
-    """One-time setup of the root ``odx`` logger."""
-    global _CONFIGURED  # noqa: PLW0603
+    # One-time setup of the root ``odx`` logger.
+    global _CONFIGURED  
     if _CONFIGURED:
         return
 
@@ -35,8 +35,7 @@ def _configure_root() -> None:
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Return a logger under the ``odx`` namespace.
-    """
+    # Return a logger under the ``odx`` namespace.
     _configure_root()
     if not name.startswith("odx"):
         name = f"odx.{name}"

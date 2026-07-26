@@ -27,7 +27,7 @@ class Config(BaseSettings):
     
     default_risk_free_rate : float
         Annualised continuously-compounded risk-free rate used when none is
-        supplied by the caller.  Default 0.05 (5 %).
+        given by the caller. Default 0.05 (5 %).
     default_dividend_yield : float
         Annualised continuous dividend yield.  Default 0.0.
     data_dir : Path

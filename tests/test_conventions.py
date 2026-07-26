@@ -11,10 +11,8 @@ from odx.conventions import (
 )
 
 
-# ---------------------------------------------------------------------------
-# DayCountConvention enum
-# ---------------------------------------------------------------------------
 
+# DayCountConvention enum
 
 class TestDayCountConvention:
     def test_values(self) -> None:
@@ -23,10 +21,7 @@ class TestDayCountConvention:
         assert DayCountConvention.THIRTY_360.value == "30/360"
 
 
-# ---------------------------------------------------------------------------
 # parse_tenor
-# ---------------------------------------------------------------------------
-
 
 class TestParseTenor:
     def test_days(self) -> None:
@@ -63,10 +58,7 @@ class TestParseTenor:
             parse_tenor("")
 
 
-# ---------------------------------------------------------------------------
 # tenor_to_date
-# ---------------------------------------------------------------------------
-
 
 class TestTenorToDate:
     def test_days_from_reference(self) -> None:

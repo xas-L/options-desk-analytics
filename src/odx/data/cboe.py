@@ -1,7 +1,7 @@
 """CBOE delayed quotes data source.
 
 Fetches data from the public CBOE delayed options API:
-``https://cdn.cboe.com/api/global/delayed_quotes/options/_{ticker}.json``
+https://cdn.cboe.com/api/global/delayed_quotes/options/_{ticker}.json
 
 Since this is an unsupported endpoint and doesn't provide risk-free rates
 or dividend yields natively, it relies on static defaults.
@@ -26,11 +26,9 @@ class CboeDelayedSource(MarketDataSource):
     """Data source for CBOE delayed quotes.
 
     Attributes
-    ----------
-    default_risk_free_rate : float
-        Rate applied to all extracted chain rows (default: 0.05).
-    default_dividend_yield : float
-        Yield applied to all extracted chain rows (default: 0.0).
+    
+    default_risk_free_rate - Rate applied to all extracted chain rows (default: 0.05).
+    default_dividend_yield - Yield applied to all extracted chain rows (default: 0.0).
     """
 
     BASE_URL = "https://cdn.cboe.com/api/global/delayed_quotes/options/_{ticker}.json"

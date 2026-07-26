@@ -1,7 +1,6 @@
 """Yahoo Finance data source implementation.
 
-Fetches live options chains, spot prices, and risk-free rates using the
-``yfinance`` package.
+Fetches live options chains, spot prices, and risk-free rates via yfinance
 """
 
 from __future__ import annotations
@@ -27,14 +26,10 @@ class YahooFinanceSource(MarketDataSource):
 
     Attributes
     ----------
-    default_risk_free_rate : float
-        Fallback rate used if the live ^IRX feed is unavailable.
-    min_bid : float
-        Drop chain rows where the bid is below this value (default: 0.05).
-    min_volume : int
-        Drop chain rows with daily volume below this (default: 0).
-    min_open_interest : int
-        Drop chain rows with open interest below this (default: 0).
+    default_risk_free_rate - Fallback rate used if the live ^IRX feed is unavailable.
+    min_bid - Drop chain rows where the bid is below this value (default: 0.05).
+    min_volume - Drop chain rows with daily volume below this (default: 0).
+    min_open_interest - Drop chain rows with open interest below this (default: 0).
     """
 
     def __init__(

@@ -35,41 +35,16 @@ class MarketDataSource(abc.ABC):
     @abc.abstractmethod
     def get_spot(self, ticker: str) -> float:
         """Fetch the current spot price of the underlying.
-
-        Parameters
-        ----------
-        ticker : str
-            Ticker symbol (e.g. 'AAPL').
-
-        Returns
-        -------
-        float
-            Latest spot price.
         """
 
     @abc.abstractmethod
     def get_dividend_yield(self, ticker: str) -> float:
         """Fetch the continuous annualised dividend yield.
-
-        Parameters
-        ----------
-        ticker : str
-            Ticker symbol.
-
-        Returns
-        -------
-        float
-            Dividend yield (e.g. 0.015 for 1.5%).
         """
 
     @abc.abstractmethod
     def get_risk_free_rate(self) -> float:
         """Fetch the current annualised risk-free rate.
-
-        Returns
-        -------
-        float
-            Risk-free rate (continuous compounding).
         """
 
     @abc.abstractmethod
@@ -79,18 +54,7 @@ class MarketDataSource(abc.ABC):
         expiries: Sequence[str | date] | None = None,
     ) -> pd.DataFrame:
         """Fetch the option chain into the standard ODX schema.
+        
+        If expiries is None, fetches all available expirations.
 
-        If `expiries` is None, fetches all available expirations.
-
-        Parameters
-        ----------
-        ticker : str
-            Ticker symbol.
-        expiries : sequence of str or date, optional
-            List of expiry dates to fetch. Strings should be 'YYYY-MM-DD'.
-
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame matching the standard chain schema.
         """
