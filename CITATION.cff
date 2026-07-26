@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it as below."
+authors:
+- family-names: "Lee"
+  given-names: "Saxon"
+title: "Options Desk Analytics"
+version: 0.1.0
+date-released: 2026-07-26
+url: "https://github.com/xas-L/options-desk-analytics"
+repository-code: "https://github.com/xas-L/options-desk-analytics"
+abstract: "A quantitative analytics framework for options pricing, volatility surface modeling, and market making."

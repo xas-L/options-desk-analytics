@@ -136,3 +136,4 @@ cython_debug/
 # Project-specific ignores
 antigravity_agent_task_list.md
 options desk analytics project guide and code.md
+index_real/

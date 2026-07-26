@@ -64,3 +64,10 @@ I built this to really understand some parts of what junior quants, systematic t
 Some parts were genuinely difficult. Getting the native C++ extension to build cleanly was a struggle. I had to debug the Windows and MinGW toolchains from scratch rather than relying on a perfectly configured MSVC environment. Another major hurdle was the SVI and SSVI calibration. It's one thing to get a surface close to market data, but forcing the optimiser to remain strictly arb-free under Gatheral's conditions needed a lot of trial and error. It also took some toiling to build out the boring but necessary plumbing (like logging, configuration, and data pipelines) before jumping into the interesting pricing maths.
 
 Despite the friction, it was a really fun project. Debugging all the numerical edge cases (like writing guards for negative variance and building calendar arbitrage penalties) taught me far more about how models behave in action.
+
+## Research Notes
+
+These are short, standalone research notes applying the `odx` tooling and the adjacent real-data pipeline to specific quantitative problems.
+
+- [Dividend timing and the equity index forward: a real-data check on FEZ](docs/research/equity_index_forward_fez.pdf) -- uses real FEZ (EURO STOXX 50 proxy) options data to quantify how much a naive continuous dividend yield mis-specifies the forward versus a discrete real-dividend schedule.
+- [Barrier options pricing](docs/research/barrier_options_pricing.pdf) -- notes on barrier option pricing and continuity corrections.
