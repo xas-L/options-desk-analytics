@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.stats import norm
 
-from .vanilla_bs import _d1_d2
+from odx.pricers.analytic.bs import _d1_d2
 
 
 def bs_delta(

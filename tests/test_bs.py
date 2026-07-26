@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from pricer.vanilla_bs import bs_price
-from pricer.greeks_bs import bs_delta, bs_gamma, bs_vega, bs_theta, bs_rho
+from odx.pricers.analytic.bs import bs_price
+from odx.greeks.analytic import bs_delta, bs_gamma, bs_vega, bs_theta, bs_rho
 
 _BASE = dict(S=100.0, K=100.0, T=1.0, r=0.05, sigma=0.20)
 

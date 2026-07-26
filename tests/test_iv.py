@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from pricer.vanilla_bs import bs_price
-from pricer.implied_vol import implied_vol, implied_vol_vectorised
+from odx.pricers.analytic.bs import bs_price
+from odx.vol.iv_solver import implied_vol, implied_vol_vectorised
 
 _TOL = 1e-6
 

@@ -172,3 +172,7 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Project-specific ignores
+antigravity_agent_task_list.md
+options desk analytics project guide and code.md

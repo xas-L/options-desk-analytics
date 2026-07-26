@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import brentq
 
-from .vanilla_bs import bs_price
+from odx.pricers.analytic.bs import bs_price
 
 _IV_LOWER = 1e-6
 _IV_UPPER = 10.0
